@@ -166,7 +166,12 @@ class GateIoWebSocketClient {
   private handleMessage(message: any): void {
     console.log("📨 RAW MESSAGE:", JSON.stringify(message));
 
-    if (message.result === "pong" && message.id) {
+    // ✅ Обрабатываем PONG от Gate.io (ответ на наш PING)
+    if (
+      message.id &&
+      this.pendingRequests.has(message.id) &&
+      message.result === "pong"
+    ) {
       const pendingRequest = this.pendingRequests.get(message.id);
       if (pendingRequest) {
         const latency = Date.now() - pendingRequest.timestamp;
@@ -177,6 +182,7 @@ class GateIoWebSocketClient {
       return;
     }
 
+    // Обрабатываем ответы с id (ошибки и другие ответы)
     if (message.id && this.pendingRequests.has(message.id)) {
       const pendingRequest = this.pendingRequests.get(message.id)!;
 
@@ -192,12 +198,14 @@ class GateIoWebSocketClient {
       return;
     }
 
+    // Обрабатываем обновления баланса (Spot Balance Channel)
     if (message.channel === "spot.balances" && message.event === "update") {
       console.log("💰 Balance update received");
       this.handleBalanceUpdate(message.result);
       return;
     }
 
+    // Обрабатываем ответы на подписку баланса
     if (message.channel === "spot.balances" && message.event === "subscribe") {
       if (message.error) {
         console.error("❌ Balance subscription error:", message.error);
@@ -213,6 +221,13 @@ class GateIoWebSocketClient {
         console.log("✅ Balance subscription successful");
         this.isAuthenticated = true;
       }
+      return;
+    }
+
+    // ✅ Обрабатываем PING от сервера (редкий случай)
+    if (message.method === "server.ping" && message.id) {
+      console.log("🏓 Received PING from server, sending PONG...");
+      this.sendPong(message.id);
       return;
     }
   }
@@ -304,8 +319,10 @@ class GateIoWebSocketClient {
   }
 
   private startPingInterval(): void {
+    // Отправляем первый ping
     this.sendPing().catch(console.error);
 
+    // Затем каждые 30 секунд
     this.pingInterval = setInterval(async () => {
       if (this.isConnected && this.ws) {
         try {
@@ -314,10 +331,11 @@ class GateIoWebSocketClient {
           console.error("❌ Error in ping interval:", error);
         }
       }
-    }, 15000);
+    }, 30000);
   }
 
   private startBalanceInterval(): void {
+    // Первая подписка на баланс через 5 секунд после подключения
     setTimeout(async () => {
       try {
         await this.subscribeToBalances();
@@ -326,6 +344,7 @@ class GateIoWebSocketClient {
       }
     }, 5000);
 
+    // Обновляем подписку каждые 30 секунд
     this.balanceInterval = setInterval(async () => {
       if (this.isConnected && this.ws && this.isAuthenticated) {
         try {
@@ -366,6 +385,7 @@ class GateIoWebSocketClient {
       throw new Error("WebSocket not connected");
     }
 
+    // ✅ Правильный формат ping для Gate.io v4 API
     const pingMessage = {
       id: this.requestId,
       method: "server.ping",
@@ -396,6 +416,26 @@ class GateIoWebSocketClient {
         reject(error);
       }
     });
+  }
+
+  // ✅ Метод для отправки PONG (если сервер инициирует ping)
+  private sendPong(pingId: number): void {
+    if (!this.isConnected || !this.ws) {
+      console.log("⏸️ WebSocket not connected, cannot send PONG");
+      return;
+    }
+
+    const pongMessage = {
+      id: pingId,
+      result: "pong",
+    };
+
+    try {
+      this.ws.send(JSON.stringify(pongMessage));
+      console.log(`📡 Sent PONG to server, ID: ${pingId}`);
+    } catch (error) {
+      console.error("❌ Error sending PONG:", error);
+    }
   }
 
   private rejectAllPendingRequests(error: Error): void {
@@ -462,7 +502,7 @@ class TradingBot {
   private statusInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
-    // ✅ FIXED: Proper access to process.env with index signature
+    // ✅ Правильный доступ к process.env
     const apiKey = process.env["GATEIO_API_KEY"];
     const apiSecret = process.env["GATEIO_API_SECRET"];
 
@@ -483,7 +523,7 @@ class TradingBot {
 
       console.log("🎯 DTrader Crypto Bot is running");
       console.log("   - Mode: Gate.io WebSocket with Balance Subscription");
-      console.log("   - Ping interval: 15 seconds");
+      console.log("   - Ping interval: 30 seconds");
       console.log("   - Balance updates: 30 seconds");
       console.log("   - Auto-reconnect: Enabled (max 10 attempts)");
       console.log("   - URL: wss://api.gateio.ws/ws/v4/");
@@ -498,7 +538,6 @@ class TradingBot {
 
   private startStatusMonitoring(): void {
     this.statusInterval = setInterval(() => {
-      // ✅ FIXED: isRunning is now properly used
       if (!this.isRunning) {
         if (this.statusInterval) {
           clearInterval(this.statusInterval);

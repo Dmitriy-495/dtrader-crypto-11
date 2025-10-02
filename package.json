@@ -1,40 +1,22 @@
 {
   "name": "dtrader-crypto-11",
   "version": "11.0.1",
-  "description": "DTrader Crypto Trading Bot for Gate.io - Minimal Version",
+  "description": "DTrader Crypto Trading Bot for Gate.io",
   "type": "module",
   "main": "dist/dtrader-crypto.js",
-  "bin": {
-    "dtrader-crypto": "./dist/dtrader-crypto.js"
-  },
   "scripts": {
     "start": "node dist/dtrader-crypto.js",
     "dev": "tsx watch dtrader-crypto.ts",
     "build": "tsc",
-    "build:watch": "tsc --watch",
     "clean": "rm -rf dist node_modules package-lock.json",
-    "type-check": "tsc --noEmit",
-    "pm2:setup": "npm run build",
-    "pm2:start": "npm run build && pm2 start ecosystem.config.cjs",
-    "pm2:stop": "pm2 stop dtrader-crypto-11",
-    "pm2:restart": "npm run build && pm2 restart dtrader-crypto-11",
-    "pm2:reload": "npm run build && pm2 reload dtrader-crypto-11",
-    "pm2:logs": "pm2 logs dtrader-crypto-11",
-    "pm2:status": "pm2 status",
-    "pm2:monit": "pm2 monit",
-    "postinstall": "npm run build",
-    "deploy": "node deploy.js",
-    "deploy:quick": "node deploy.js --quick",
-    "deploy:force": "node deploy.js --force",
-    "deploy:clean": "npm run clean && node deploy.js"
+    "deploy": "node deploy.cjs",
+    "deploy:clean": "npm run clean && node deploy.cjs"
   },
   "keywords": [
     "crypto",
     "trading",
     "bot",
-    "gate.io",
-    "websocket",
-    "typescript"
+    "gate.io"
   ],
   "author": "DTrader",
   "license": "MIT",
@@ -50,13 +32,5 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Dmitriy-495/dtrader-crypto-11.git"
-  },
-  "bugs": {
-    "url": "https://github.com/Dmitriy-495/dtrader-crypto-11/issues"
-  },
-  "homepage": "https://github.com/Dmitriy-495/dtrader-crypto-11#readme"
+  }
 }
