@@ -3,21 +3,30 @@
   "version": "11.0.1",
   "description": "DTrader Crypto Trading Bot for Gate.io - Minimal Version",
   "type": "module",
-  "main": "dtrader-crypto.ts",
+  "main": "dist/dtrader-crypto.js",
   "bin": {
-    "dtrader-crypto": "./dtrader-crypto.ts"
+    "dtrader-crypto": "./dist/dtrader-crypto.js"
   },
   "scripts": {
-    "start": "tsx dtrader-crypto.ts",
+    "start": "node dist/dtrader-crypto.js",
     "dev": "tsx watch dtrader-crypto.ts",
-    "build": "echo 'TypeScript project - no build required'",
-    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "clean": "rm -rf dist node_modules package-lock.json",
+    "type-check": "tsc --noEmit",
+    "pm2:setup": "npm run build",
+    "pm2:start": "npm run build && pm2 start ecosystem.config.cjs",
     "pm2:stop": "pm2 stop dtrader-crypto-11",
-    "pm2:restart": "pm2 restart dtrader-crypto-11",
+    "pm2:restart": "npm run build && pm2 restart dtrader-crypto-11",
+    "pm2:reload": "npm run build && pm2 reload dtrader-crypto-11",
     "pm2:logs": "pm2 logs dtrader-crypto-11",
     "pm2:status": "pm2 status",
-    "type-check": "tsc --noEmit",
-    "clean": "rm -rf node_modules package-lock.json"
+    "pm2:monit": "pm2 monit",
+    "postinstall": "npm run build",
+    "deploy": "node deploy.js",
+    "deploy:quick": "node deploy.js --quick",
+    "deploy:force": "node deploy.js --force",
+    "deploy:clean": "npm run clean && node deploy.js"
   },
   "keywords": [
     "crypto",
@@ -44,10 +53,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/dtrader-crypto-11.git"
+    "url": "https://github.com/Dmitriy-495/dtrader-crypto-11.git"
   },
   "bugs": {
-    "url": "https://github.com/your-username/dtrader-crypto-11/issues"
+    "url": "https://github.com/Dmitriy-495/dtrader-crypto-11/issues"
   },
-  "homepage": "https://github.com/your-username/dtrader-crypto-11#readme"
+  "homepage": "https://github.com/Dmitriy-495/dtrader-crypto-11#readme"
 }

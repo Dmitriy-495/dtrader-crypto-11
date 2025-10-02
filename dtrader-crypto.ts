@@ -3,10 +3,12 @@
 /**
  * DTrader Crypto 11.0.1
  * Gate.io WebSocket Client
- * Ping-pong with Gate.io exchange
+ * Ping-pong and balance subscription with authentication
+ * WITH AUTO-RECONNECT
  */
 
 import { WebSocket } from "ws";
+import * as crypto from "crypto";
 import * as dotenv from "dotenv";
 
 dotenv.config();
@@ -15,10 +17,12 @@ dotenv.config();
 
 class GateIoWebSocketClient {
   private ws: WebSocket | null = null;
-  private baseURL: string = "wss://ws.gate.io/v4/";
+  private baseURL: string = "wss://api.gateio.ws/ws/v4/";
   private isConnected: boolean = false;
+  private isAuthenticated: boolean = false;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
-  private lastPingTime: number = 0;
+  private balanceInterval: ReturnType<typeof setInterval> | null = null;
+  private reconnectInterval: ReturnType<typeof setInterval> | null = null;
   private requestId: number = 1;
   private pendingRequests: Map<
     number,
@@ -29,36 +33,63 @@ class GateIoWebSocketClient {
     }
   > = new Map();
   private connectionPromise: Promise<void> | null = null;
+  private apiKey: string;
+  private apiSecret: string;
 
-  constructor() {
+  // Auto-reconnect properties
+  private reconnectAttempts: number = 0;
+  private maxReconnectAttempts: number = 10;
+  private reconnectDelay: number = 1000;
+  private maxReconnectDelay: number = 30000;
+  private isReconnecting: boolean = false;
+  private lastConnectionTime: number = 0;
+
+  constructor(apiKey: string, apiSecret: string) {
+    this.apiKey = apiKey;
+    this.apiSecret = apiSecret;
     this.connectionPromise = this.connect();
   }
 
   private async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      console.log("🔌 Connecting to Gate.io WebSocket...");
+      if (this.isReconnecting) {
+        console.log(
+          `🔄 [Attempt ${this.reconnectAttempts + 1}/${
+            this.maxReconnectAttempts
+          }] Reconnecting to Gate.io...`
+        );
+      } else {
+        console.log("🔌 Connecting to Gate.io WebSocket...");
+      }
 
       this.ws = new WebSocket(this.baseURL);
 
       const connectionTimeout = setTimeout(() => {
         reject(new Error("Connection timeout"));
+        this.scheduleReconnect();
       }, 10000);
 
       this.ws.on("open", async () => {
         clearTimeout(connectionTimeout);
-        console.log("✅ Connected to Gate.io WebSocket");
         this.isConnected = true;
+        this.isReconnecting = false;
+        this.reconnectAttempts = 0;
+        this.lastConnectionTime = Date.now();
+
+        console.log("✅ Connected to Gate.io WebSocket");
+
+        if (this.reconnectAttempts > 0) {
+          console.log("🎉 Reconnection successful!");
+        }
 
         try {
-          // Ждем немного перед первым ping
           await this.delay(3000);
-
-          // Запускаем ping каждые 15 секунд
           this.startPingInterval();
-
+          this.startBalanceInterval();
           resolve();
         } catch (error) {
           reject(error);
+          this.scheduleReconnect();
         }
       });
 
@@ -76,24 +107,65 @@ class GateIoWebSocketClient {
         console.log(
           `🔌 Disconnected from Gate.io WebSocket. Code: ${code}, Reason: ${reason}`
         );
-        this.isConnected = false;
-        this.stopPingInterval();
-        this.rejectAllPendingRequests(
-          new Error(`Connection closed: ${reason}`)
-        );
+        this.handleDisconnection();
       });
 
       this.ws.on("error", (error: Error) => {
         clearTimeout(connectionTimeout);
         console.error("❌ WebSocket error:", error);
-        this.isConnected = false;
+        this.handleDisconnection();
         reject(error);
       });
     });
   }
 
+  private handleDisconnection(): void {
+    this.isConnected = false;
+    this.isAuthenticated = false;
+    this.stopIntervals();
+    this.rejectAllPendingRequests(new Error("Connection lost"));
+
+    if (!this.isReconnecting) {
+      this.scheduleReconnect();
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (
+      this.isReconnecting ||
+      this.reconnectAttempts >= this.maxReconnectAttempts
+    ) {
+      return;
+    }
+
+    this.isReconnecting = true;
+    this.reconnectAttempts++;
+
+    const delay = Math.min(
+      this.reconnectDelay * Math.pow(1.5, this.reconnectAttempts - 1),
+      this.maxReconnectDelay
+    );
+
+    console.log(
+      `⏰ Scheduled reconnect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`
+    );
+
+    this.reconnectInterval = setTimeout(async () => {
+      try {
+        await this.connect();
+      } catch (error) {
+        console.error(
+          `❌ Reconnection attempt ${this.reconnectAttempts} failed:`,
+          error
+        );
+        this.scheduleReconnect();
+      }
+    }, delay);
+  }
+
   private handleMessage(message: any): void {
-    // Обрабатываем pong от Gate.io
+    console.log("📨 RAW MESSAGE:", JSON.stringify(message));
+
     if (message.result === "pong" && message.id) {
       const pendingRequest = this.pendingRequests.get(message.id);
       if (pendingRequest) {
@@ -105,13 +177,14 @@ class GateIoWebSocketClient {
       return;
     }
 
-    // Обрабатываем ответы с id
     if (message.id && this.pendingRequests.has(message.id)) {
       const pendingRequest = this.pendingRequests.get(message.id)!;
 
       if (message.error) {
+        console.error("❌ Request error:", message.error);
         pendingRequest.reject(new Error(`API Error: ${message.error.message}`));
       } else {
+        console.log("✅ Request successful");
         pendingRequest.resolve(message.result);
       }
 
@@ -119,31 +192,173 @@ class GateIoWebSocketClient {
       return;
     }
 
-    // Логируем неизвестные сообщения
-    if (message.method && message.method !== "server.ping") {
-      console.log("📨 Received message:", JSON.stringify(message));
+    if (message.channel === "spot.balances" && message.event === "update") {
+      console.log("💰 Balance update received");
+      this.handleBalanceUpdate(message.result);
+      return;
+    }
+
+    if (message.channel === "spot.balances" && message.event === "subscribe") {
+      if (message.error) {
+        console.error("❌ Balance subscription error:", message.error);
+        this.isAuthenticated = false;
+
+        if (message.error.code === 1) {
+          console.error(
+            "💥 Authentication error - check API keys. Stopping reconnection attempts."
+          );
+          this.stopReconnection();
+        }
+      } else {
+        console.log("✅ Balance subscription successful");
+        this.isAuthenticated = true;
+      }
+      return;
+    }
+  }
+
+  private handleBalanceUpdate(balanceData: any): void {
+    try {
+      console.log("💰 Raw balance data:", JSON.stringify(balanceData));
+
+      if (Array.isArray(balanceData)) {
+        const usdtBalance = balanceData.find(
+          (item: any) => item.currency === "USDT"
+        );
+
+        if (usdtBalance) {
+          const available = parseFloat(usdtBalance.available || "0");
+          const locked = parseFloat(usdtBalance.locked || "0");
+          const total = available + locked;
+
+          console.log(
+            `💰 USDT Balance: ${available.toFixed(
+              6
+            )} available, ${locked.toFixed(6)} locked, ${total.toFixed(
+              6
+            )} total`
+          );
+
+          if (usdtBalance.change_type) {
+            console.log(`   Change type: ${usdtBalance.change_type}`);
+          }
+        } else {
+          console.log("💰 USDT balance not found in response");
+          const currencies = balanceData
+            .map((item: any) => item.currency)
+            .join(", ");
+          console.log(`   Available currencies: ${currencies}`);
+        }
+      } else {
+        console.log("💰 Unexpected balance data format:", typeof balanceData);
+      }
+    } catch (error) {
+      console.error("❌ Error processing balance update:", error);
+    }
+  }
+
+  private generateSignature(
+    channel: string,
+    event: string,
+    timestamp: number
+  ): string {
+    const message = `channel=${channel}&event=${event}&time=${timestamp}`;
+    return crypto
+      .createHmac("sha512", this.apiSecret)
+      .update(message)
+      .digest("hex");
+  }
+
+  private async subscribeToBalances(): Promise<void> {
+    if (!this.isConnected || !this.ws) {
+      console.log("⏸️  WebSocket not connected, skipping balance subscription");
+      return;
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = this.generateSignature(
+      "spot.balances",
+      "subscribe",
+      timestamp
+    );
+
+    const balanceMessage = {
+      time: timestamp,
+      channel: "spot.balances",
+      event: "subscribe",
+      payload: [],
+      auth: {
+        method: "api_key",
+        KEY: this.apiKey,
+        SIGN: signature,
+      },
+    };
+
+    try {
+      this.ws.send(JSON.stringify(balanceMessage));
+      console.log("📊 Subscribing to balance updates...");
+    } catch (error) {
+      console.error("❌ Error subscribing to balances:", error);
+      throw error;
     }
   }
 
   private startPingInterval(): void {
-    // Первый ping через 3 секунды после подключения
-    setTimeout(() => {
-      this.sendPing();
-    }, 3000);
+    this.sendPing().catch(console.error);
 
-    // Затем каждые 15 секунд
-    this.pingInterval = setInterval(() => {
+    this.pingInterval = setInterval(async () => {
       if (this.isConnected && this.ws) {
-        this.sendPing();
+        try {
+          await this.sendPing();
+        } catch (error) {
+          console.error("❌ Error in ping interval:", error);
+        }
       }
     }, 15000);
   }
 
-  private stopPingInterval(): void {
+  private startBalanceInterval(): void {
+    setTimeout(async () => {
+      try {
+        await this.subscribeToBalances();
+      } catch (error) {
+        console.error("❌ Failed initial balance subscription:", error);
+      }
+    }, 5000);
+
+    this.balanceInterval = setInterval(async () => {
+      if (this.isConnected && this.ws && this.isAuthenticated) {
+        try {
+          const timeSinceLastUpdate = Date.now() - this.lastConnectionTime;
+          if (timeSinceLastUpdate > 120000) {
+            console.log("🔄 Refreshing balance subscription...");
+            await this.subscribeToBalances();
+          }
+        } catch (error) {
+          console.error("❌ Error refreshing balance subscription:", error);
+        }
+      }
+    }, 30000);
+  }
+
+  private stopIntervals(): void {
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
     }
+    if (this.balanceInterval) {
+      clearInterval(this.balanceInterval);
+      this.balanceInterval = null;
+    }
+  }
+
+  private stopReconnection(): void {
+    if (this.reconnectInterval) {
+      clearTimeout(this.reconnectInterval);
+      this.reconnectInterval = null;
+    }
+    this.isReconnecting = false;
+    this.reconnectAttempts = this.maxReconnectAttempts;
   }
 
   private async sendPing(): Promise<{ latency: number; timestamp: number }> {
@@ -200,13 +415,34 @@ class GateIoWebSocketClient {
     }
   }
 
-  public getConnectionStatus(): boolean {
-    return this.isConnected;
+  public getConnectionStatus(): {
+    connected: boolean;
+    authenticated: boolean;
+    reconnecting: boolean;
+  } {
+    return {
+      connected: this.isConnected,
+      authenticated: this.isAuthenticated,
+      reconnecting: this.isReconnecting,
+    };
+  }
+
+  public getReconnectStatus(): {
+    attempts: number;
+    maxAttempts: number;
+    reconnecting: boolean;
+  } {
+    return {
+      attempts: this.reconnectAttempts,
+      maxAttempts: this.maxReconnectAttempts,
+      reconnecting: this.isReconnecting,
+    };
   }
 
   public async close(): Promise<void> {
     console.log("🛑 Closing Gate.io WebSocket connection...");
-    this.stopPingInterval();
+    this.stopIntervals();
+    this.stopReconnection();
     this.rejectAllPendingRequests(new Error("Connection closed by user"));
 
     if (this.ws) {
@@ -223,26 +459,36 @@ class GateIoWebSocketClient {
 class TradingBot {
   private gateIoClient: GateIoWebSocketClient;
   private isRunning: boolean = false;
+  private statusInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
-    this.gateIoClient = new GateIoWebSocketClient();
+    // ✅ FIXED: Proper access to process.env with index signature
+    const apiKey = process.env["GATEIO_API_KEY"];
+    const apiSecret = process.env["GATEIO_API_SECRET"];
+
+    if (!apiKey || !apiSecret) {
+      throw new Error(
+        "❌ Missing GATEIO_API_KEY or GATEIO_API_SECRET in environment variables"
+      );
+    }
+
+    console.log("🔑 API Key found:", apiKey.substring(0, 8) + "...");
+    this.gateIoClient = new GateIoWebSocketClient(apiKey, apiSecret);
   }
 
   async start(): Promise<void> {
     try {
       console.log("🚀 Starting DTrader Crypto Bot...");
-
-      // Ждем подключения к WebSocket
       await this.gateIoClient.waitForConnection();
 
       console.log("🎯 DTrader Crypto Bot is running");
-      console.log("   - Mode: Gate.io WebSocket Ping-Pong");
+      console.log("   - Mode: Gate.io WebSocket with Balance Subscription");
       console.log("   - Ping interval: 15 seconds");
-      console.log("   - URL: wss://ws.gate.io/v4/");
+      console.log("   - Balance updates: 30 seconds");
+      console.log("   - Auto-reconnect: Enabled (max 10 attempts)");
+      console.log("   - URL: wss://api.gateio.ws/ws/v4/");
 
       this.isRunning = true;
-
-      // Запускаем мониторинг статуса
       this.startStatusMonitoring();
     } catch (error) {
       console.error("❌ Failed to start bot:", error);
@@ -250,29 +496,48 @@ class TradingBot {
     }
   }
 
-  private async startStatusMonitoring(): Promise<void> {
-    while (this.isRunning) {
+  private startStatusMonitoring(): void {
+    this.statusInterval = setInterval(() => {
+      // ✅ FIXED: isRunning is now properly used
+      if (!this.isRunning) {
+        if (this.statusInterval) {
+          clearInterval(this.statusInterval);
+          this.statusInterval = null;
+        }
+        return;
+      }
+
       try {
         const status = this.gateIoClient.getConnectionStatus();
+        const reconnectStatus = this.gateIoClient.getReconnectStatus();
+
         console.log(
-          `📊 Connection status: ${status ? "✅ Connected" : "❌ Disconnected"}`
+          `📊 Status: ${
+            status.connected ? "✅ Connected" : "❌ Disconnected"
+          }, Auth: ${
+            status.authenticated ? "✅ Authenticated" : "❌ Not authenticated"
+          }, Reconnecting: ${status.reconnecting ? "🔄 Yes" : "✅ No"}`
         );
 
-        await this.delay(30000);
+        if (reconnectStatus.reconnecting) {
+          console.log(
+            `   🔄 Reconnect progress: ${reconnectStatus.attempts}/${reconnectStatus.maxAttempts}`
+          );
+        }
       } catch (error) {
         console.error("❌ Error in status monitoring:", error);
-        await this.delay(5000);
       }
-    }
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    }, 30000);
   }
 
   async shutdown(): Promise<void> {
     console.log("\n🛑 Shutting down...");
     this.isRunning = false;
+
+    if (this.statusInterval) {
+      clearInterval(this.statusInterval);
+      this.statusInterval = null;
+    }
 
     try {
       await this.gateIoClient.close();
@@ -284,7 +549,7 @@ class TradingBot {
   }
 }
 
-// ==================== ЗАПУСК ПРИЛОЖЕНИЯ ====================
+// ==================== APPLICATION ====================
 
 class Application {
   private bot: TradingBot;
@@ -315,11 +580,10 @@ class Application {
   }
 }
 
-// ==================== ЗАПУСК ПРИЛОЖЕНИЯ ====================
+// ==================== APPLICATION STARTUP ====================
 
 const app = new Application();
 
-// Graceful shutdown handlers
 process.on("SIGINT", () => app.gracefulShutdown("SIGINT"));
 process.on("SIGTERM", () => app.gracefulShutdown("SIGTERM"));
 
@@ -333,7 +597,6 @@ process.on("unhandledRejection", async (reason, promise) => {
   await app.gracefulShutdown("unhandledRejection");
 });
 
-// Запуск приложения
 app.run().catch(async (error) => {
   console.error("💥 Application crash:", error);
   await app.gracefulShutdown("startupError");
