@@ -1,0 +1,18 @@
+{
+  "name": "dtrader-crypto-11",
+  "version": "11.0.1",
+  "type": "module",
+  "scripts": {
+    "start": "tsx dtrader-crypto.ts",
+    "dev": "tsx watch dtrader-crypto.ts"
+  },
+  "dependencies": {
+    "ws": "^8.14.2",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.5",
+    "@types/ws": "^8.5.9",
+    "tsx": "^4.6.2"
+  }
+}
