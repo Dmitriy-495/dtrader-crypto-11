@@ -10,7 +10,7 @@ module.exports = {
       max_memory_restart: "512M",
       env: {
         NODE_ENV: "production",
-        WS_PORT: 2808, // Используем порт 2808
+        WS_PORT: 2808,
       },
       error_file: "./logs/error.log",
       out_file: "./logs/output.log",

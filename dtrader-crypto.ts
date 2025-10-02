@@ -3,7 +3,7 @@
 /**
  * DTrader Crypto 11.0.1
  * Gate.io WebSocket Client
- * Ping-pong with Gate.io exchange using Promises
+ * Ping-pong with Gate.io exchange
  */
 
 import { WebSocket } from "ws";
@@ -18,6 +18,7 @@ class GateIoWebSocketClient {
   private baseURL: string = "wss://ws.gate.io/v4/";
   private isConnected: boolean = false;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
+  private lastPingTime: number = 0;
   private requestId: number = 1;
   private pendingRequests: Map<
     number,
@@ -107,11 +108,13 @@ class GateIoWebSocketClient {
     // Обрабатываем ответы с id
     if (message.id && this.pendingRequests.has(message.id)) {
       const pendingRequest = this.pendingRequests.get(message.id)!;
+
       if (message.error) {
         pendingRequest.reject(new Error(`API Error: ${message.error.message}`));
       } else {
         pendingRequest.resolve(message.result);
       }
+
       this.pendingRequests.delete(message.id);
       return;
     }
@@ -123,17 +126,15 @@ class GateIoWebSocketClient {
   }
 
   private startPingInterval(): void {
-    // Отправляем первый ping
-    this.sendPing().catch(console.error);
+    // Первый ping через 3 секунды после подключения
+    setTimeout(() => {
+      this.sendPing();
+    }, 3000);
 
     // Затем каждые 15 секунд
-    this.pingInterval = setInterval(async () => {
+    this.pingInterval = setInterval(() => {
       if (this.isConnected && this.ws) {
-        try {
-          await this.sendPing();
-        } catch (error) {
-          console.error("❌ Error in ping interval:", error);
-        }
+        this.sendPing();
       }
     }, 15000);
   }
@@ -157,7 +158,6 @@ class GateIoWebSocketClient {
     };
 
     return new Promise((resolve, reject) => {
-      // Сохраняем запрос в pending
       this.pendingRequests.set(this.requestId, {
         resolve,
         reject,
@@ -168,13 +168,12 @@ class GateIoWebSocketClient {
         this.ws!.send(JSON.stringify(pingMessage));
         console.log("📡 Sent PING to Gate.io, ID:", pingMessage.id);
 
-        // Устанавливаем таймаут для запроса
         setTimeout(() => {
           if (this.pendingRequests.has(this.requestId)) {
             this.pendingRequests.delete(this.requestId);
             reject(new Error(`PONG timeout for ID: ${this.requestId}`));
           }
-        }, 10000); // 10 секунд таймаут
+        }, 10000);
 
         this.requestId++;
       } catch (error) {
@@ -259,11 +258,10 @@ class TradingBot {
           `📊 Connection status: ${status ? "✅ Connected" : "❌ Disconnected"}`
         );
 
-        // Ждем 30 секунд перед следующей проверкой
         await this.delay(30000);
       } catch (error) {
         console.error("❌ Error in status monitoring:", error);
-        await this.delay(5000); // Ждем 5 секунд при ошибке
+        await this.delay(5000);
       }
     }
   }
@@ -325,7 +323,6 @@ const app = new Application();
 process.on("SIGINT", () => app.gracefulShutdown("SIGINT"));
 process.on("SIGTERM", () => app.gracefulShutdown("SIGTERM"));
 
-// Обработка необработанных исключений
 process.on("uncaughtException", async (error) => {
   console.error("💥 Uncaught Exception:", error);
   await app.gracefulShutdown("uncaughtException");
